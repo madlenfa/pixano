@@ -5,6 +5,7 @@ License: CECILL-C
 -------------------------------------->
 
 <script lang="ts">
+  import * as THREE from "three";
   import Konva from "konva";
   import { MousePointer2, Save, Square, Trash2 } from "lucide-svelte";
   import { getContext, onMount } from "svelte";
@@ -12,13 +13,17 @@ License: CECILL-C
   import { buildBBoxCreate, buildBBoxUpdate, generateShortId } from "$lib/annotations/buildPayloads.js";
   import type {
     CoordsNorm,
+    DraftBBox3D,
     ImageWidgetOptions,
     ImageWidgetStorage,
     LocalBBox,
+    PointCloudWidgetStorage,
     ResourceMutation,
+    CameraCalibration,
   } from "$lib/annotations/types.js";
   import { pickEntityLabel } from "$lib/annotations/types.js";
   import type { WorkspaceManager } from "$lib/workspace/workspaceManager.svelte.js";
+ import type { LocalBBox3D } from "$lib/api/annotations.js";
 
   interface Props {
     widgetId: string;
@@ -37,6 +42,7 @@ License: CECILL-C
   // svelte-ignore state_referenced_locally
   const stableWidgetId = widgetId;
   const storage = manager.getStorage(stableWidgetId) as ImageWidgetStorage;
+  const storage3d = manager.getStorage(stableWidgetId) as PointCloudWidgetStorage;
   // svelte-ignore state_referenced_locally
   const imgOptions = options as ImageWidgetOptions;
 
@@ -49,10 +55,12 @@ License: CECILL-C
   let annotationLayer: Konva.Layer | null = null;
   let konvaImage: Konva.Image | null = null;
   let loadedImg: HTMLImageElement | null = null;
+  let cameraCalibration: CameraCalibration | null = null;
   let placeholderShapes: Konva.Node[] = [];
 
   // Map LocalBBox.id -> Konva.Rect used to render it on the annotation layer.
   const rectByBBoxId = new Map<string, Konva.Rect>();
+  const pointByBBoxId = new Map<string, Konva.Circle[] | null>();
   // Map LocalBBox.id -> Konva.Label rendered above the rect (category name,
   // etc.). Only present when we have a non-empty derived label.
   const labelByBBoxId = new Map<string, Konva.Label>();
@@ -87,6 +95,16 @@ License: CECILL-C
     };
   }
 
+  function normalizedPointToPixel(coords: { x: number; y: number }): { x: number; y: number } | null {
+    const frame = imageFrame();
+    if (!frame) return null;
+    // console.log(frame.x,frame.y, frame.w, frame.h, coords.x, coords.y);
+    return {
+      x: frame.x + coords.x * frame.w,
+      y: frame.y + coords.y * frame.h,
+    };
+  }
+
   function fitImageToStage() {
     if (!stage || !konvaImage || !loadedImg) return;
     const sw = stage.width();
@@ -100,6 +118,7 @@ License: CECILL-C
     konvaImage.y((sh - ih) / 2);
     imageLayer?.batchDraw();
     redrawBoxes();
+    redraw3dBoxes();
   }
 
   function redrawPlaceholder() {
@@ -158,6 +177,64 @@ License: CECILL-C
 
     return rect;
   }
+  function makePoint(x: number, y: number): Konva.Circle {
+    const point = new Konva.Circle({
+      x,
+      y,
+      radius: 2,
+      stroke: "#f59e0b",
+      strokeWidth: 2,
+      fill: "rgba(245,158,11,1)",
+      draggable: false,
+    });
+    return point;
+  }
+
+  function get3dbboxCorners(bbox: DraftBBox3D): { x: number; y: number; z: number }[] {
+    const [x, y, z, w, h, d] = bbox.coordsLance;
+    let rotation_matrix;
+    if (!bbox.rotation){
+      rotation_matrix = new THREE.Matrix3().identity();
+    }else{
+      rotation_matrix = new THREE.Matrix3().fromArray(bbox.rotation).transpose();
+    }
+    const unitCube = [
+      [-0.5,-0.5, -0.5],
+      [0.5, -0.5, -0.5],
+      [0.5, 0.5, -0.5],
+      [-0.5, 0.5, -0.5],
+      [-0.5, -0.5, 0.5],
+      [0.5, -0.5, 0.5],
+      [0.5, 0.5, 0.5],
+      [-0.5, 0.5, 0.5],
+    ]
+    let scaledCorners = unitCube.map(([cx, cy, cz]) => [cx * w, cy * h, cz * d]);
+    let rotatedCorners = scaledCorners.map(([cx, cy, cz]) => (new THREE.Vector3(cx, cy, cz)).applyMatrix3(rotation_matrix));
+    let translatedCorners = rotatedCorners.map((corner) => ({ x: corner.x + x, y: corner.y + y, z: corner.z + z }));
+    return translatedCorners;
+  }
+
+  function projectPoint(bbox: DraftBBox3D): { x: number; y: number }[] | null {
+    if (!imgOptions.calibration) return null;
+    const f = imgOptions.calibration.f;
+    const c = imgOptions.calibration.c;
+    const extrinsics = new THREE.Matrix4().fromArray(imgOptions.calibration.extrinsicMatrix).transpose();
+    // Homogenous points
+    let points_h = get3dbboxCorners(bbox).map(point => [point.x, point.y, point.z, 1]);
+    // world -> cam
+    let pointsCam = points_h.map(([x, y, z, w]) => {
+      let vec = new THREE.Vector4(x, y, z, w).applyMatrix4(extrinsics);
+      return { x: vec.x, y: vec.y, z: vec.z };
+    });
+    let projectedPoints = pointsCam.map(({x, y, z}) => {
+      if (z <= 0) return null; // Behind the camera
+      return {
+        x: f[0] * x / z + c[0],
+        y: f[1] * y / z + c[1],
+      };
+    });
+    return projectedPoints.every(p => p !== null) ? projectedPoints as { x: number; y: number }[] : null;
+  }
 
   /**
    * Build a Konva.Label for a bbox based on its entity fields. Returns null
@@ -195,6 +272,86 @@ License: CECILL-C
     label.position({ x, y: y - labelHeight - 1 });
   }
 
+  function redraw3dBoxes(){
+    if (!annotationLayer) return;
+    const activeIds = new Set<string>();
+
+        let bboxes3d: DraftBBox3D[] = [{
+        id: "fake1",
+        entityId: storage.bboxes[0]?.entityId ?? "fakeEntity",
+        coordsLance:[345.848, 655.799, 1.196, 4.795, 2.09, 2.0],
+        rotation:[-0.9660164, -0.25848073, 0.0, 0.25848073, -0.9660164, 0.0, 0.0, 0.0, 1.0],
+        persisted: false,
+      },
+      {
+        id: "fake2",
+        entityId: storage.bboxes[0]?.entityId ?? "fakeEntity",
+        coordsLance:[330.789, 641.074, 1.163, 4.512 , 2.06, 1.723],
+        rotation:[-0.75264674, -0.65842456, 0.0, 0.65842456, -0.75264674, 0.0, 0.0, 0.0, 1.0],
+        persisted: false,
+      },
+      ];
+
+    for (const bbox of bboxes3d) {
+      activeIds.add(bbox.id);
+      let points = pointByBBoxId.get(bbox.id);
+      let projectedPoints = projectPoint(bbox);
+      if (!points){
+        let normalizedPoints = projectedPoints?.map(point => {
+          const dx = point.x /imgOptions.imageWidth;
+          const dy = point.y /imgOptions.imageHeight;
+          console.log(imgOptions.imageWidth,imgOptions.imageHeight, point.x, point.y, dx, dy);
+          return {x:dx,y:dy};
+          });
+        // console.log(!projectedPoints ? "Projection failed" : `${projectedPoints[0].x}, ${projectedPoints[0].y}`);
+        const pixels = normalizedPoints?.map(normalizedPointToPixel);
+        if (pixels) {
+          normalizedPoints?.forEach((point, i) => {
+            const pixel = pixels[i];
+            if (pixel) {
+              point.x=pixel.x;
+              point.y=pixel.y;
+            }
+          });
+        }
+        // console.log(!normalizedPoints ? "No projected points" : `${normalizedPoints[0].x}, ${normalizedPoints[0].y}`);
+        points = normalizedPoints?.map(point => {
+          const konvaPoint = makePoint(point.x, point.y);
+          annotationLayer?.add(konvaPoint);
+          console.log(`Added point at ${konvaPoint.x()}, ${konvaPoint.y()}`);
+          return konvaPoint;
+        });
+        // console.log(!points ? "No points" : `${points[0].x()}, ${points[0]?.y()}`);
+        if (!points) continue;
+        pointByBBoxId.set(bbox.id, points);
+      } else {
+        let normalizedPoints = projectedPoints?.map(point => {
+          const dx = point.x /imgOptions.imageWidth;
+          const dy = point.y /imgOptions.imageHeight;
+          console.log(imgOptions.imageWidth,imgOptions.imageHeight, point.x, point.y, dx, dy);
+          return {x:dx,y:dy};
+          });
+        const pixels = normalizedPoints?.map(normalizedPointToPixel);
+        if (pixels) {
+          points?.forEach((point, i) => {
+            const pixel = pixels[i];
+            if (pixel) {
+              point.x(pixel.x);
+              point.y(pixel.y);
+            }
+          });
+        }
+        // points?.forEach(point => {
+        //   point.stroke(bbox.persisted ? "#22d3ee" : "#f59e0b");
+        //   point.dash(bbox.persisted ? [] : [6, 4]);
+        // });
+
+      }
+    }
+    syncTransformer();
+    annotationLayer.batchDraw();
+  }
+
   function redrawBoxes() {
     if (!annotationLayer) return;
 
@@ -207,6 +364,7 @@ License: CECILL-C
         if (!rect) continue;
         annotationLayer.add(rect);
         rectByBBoxId.set(bbox.id, rect);
+        // console.log(rect.x(), rect.y());
       } else {
         const pixel = normalizedRectToPixel(bbox.coordsNorm);
         if (pixel) {
@@ -225,7 +383,7 @@ License: CECILL-C
       if (!label) {
         label = makeBoxLabel(bbox) ?? undefined;
         if (label) {
-          annotationLayer.add(label);
+          //annotationLayer.add(label);
           labelByBBoxId.set(bbox.id, label);
         }
       }
@@ -352,6 +510,7 @@ License: CECILL-C
     storage.bboxes = storage.bboxes.filter((b) => b.id !== bbox.id);
     storage.selectedId = null;
     redrawBoxes();
+    redraw3dBoxes();
   }
 
   function beginDraw(event: Konva.KonvaEventObject<MouseEvent>) {
@@ -464,6 +623,7 @@ License: CECILL-C
     storage.mode = "select";
     storage.selectedId = localId;
     redrawBoxes();
+    redraw3dBoxes();
   }
 
   function cancelDraft() {
@@ -555,6 +715,7 @@ License: CECILL-C
         fitImageToStage();
         imageLoaded = true;
         redrawBoxes();
+        redraw3dBoxes();
       };
       img.onerror = () => {
         imageError = true;
@@ -613,6 +774,7 @@ License: CECILL-C
     void storage.bboxes.length;
     void storage.selectedId;
     if (imageLoaded) redrawBoxes();
+    if (imageLoaded) redraw3dBoxes();
   });
 
   function drawPlaceholder(layer: Konva.Layer, width: number, height: number) {
