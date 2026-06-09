@@ -17,13 +17,11 @@ License: CECILL-C
     ImageWidgetOptions,
     ImageWidgetStorage,
     LocalBBox,
-    PointCloudWidgetStorage,
     ResourceMutation,
     CameraCalibration,
   } from "$lib/annotations/types.js";
   import { pickEntityLabel } from "$lib/annotations/types.js";
   import type { WorkspaceManager } from "$lib/workspace/workspaceManager.svelte.js";
- import type { LocalBBox3D } from "$lib/api/annotations.js";
 
   interface Props {
     widgetId: string;
@@ -42,7 +40,6 @@ License: CECILL-C
   // svelte-ignore state_referenced_locally
   const stableWidgetId = widgetId;
   const storage = manager.getStorage(stableWidgetId) as ImageWidgetStorage;
-  const storage3d = manager.getStorage(stableWidgetId) as PointCloudWidgetStorage;
   // svelte-ignore state_referenced_locally
   const imgOptions = options as ImageWidgetOptions;
 
@@ -60,7 +57,7 @@ License: CECILL-C
 
   // Map LocalBBox.id -> Konva.Rect used to render it on the annotation layer.
   const rectByBBoxId = new Map<string, Konva.Rect>();
-  const pointByBBoxId = new Map<string, Konva.Circle[] | null>();
+  const linesByBBoxId = new Map<string, Konva.Line[] | null>();
   // Map LocalBBox.id -> Konva.Label rendered above the rect (category name,
   // etc.). Only present when we have a non-empty derived label.
   const labelByBBoxId = new Map<string, Konva.Label>();
@@ -98,7 +95,6 @@ License: CECILL-C
   function normalizedPointToPixel(coords: { x: number; y: number }): { x: number; y: number } | null {
     const frame = imageFrame();
     if (!frame) return null;
-    // console.log(frame.x,frame.y, frame.w, frame.h, coords.x, coords.y);
     return {
       x: frame.x + coords.x * frame.w,
       y: frame.y + coords.y * frame.h,
@@ -117,7 +113,7 @@ License: CECILL-C
     konvaImage.x((sw - iw) / 2);
     konvaImage.y((sh - ih) / 2);
     imageLayer?.batchDraw();
-    redrawBoxes();
+    //redrawBoxes();
     redraw3dBoxes();
   }
 
@@ -188,6 +184,15 @@ License: CECILL-C
       draggable: false,
     });
     return point;
+  }
+
+  function makeLine(p1: { x: number; y: number }, p2: { x: number; y: number }): Konva.Line {
+    const line = new Konva.Line({
+      points: [p1.x, p1.y, p2.x, p2.y],
+      stroke: "#f59e0b",
+      strokeWidth: 2,
+    });
+    return line;
   }
 
   function get3dbboxCorners(bbox: DraftBBox3D): { x: number; y: number; z: number }[] {
@@ -274,36 +279,102 @@ License: CECILL-C
 
   function redraw3dBoxes(){
     if (!annotationLayer) return;
+    const edges = [
+      [0, 1], [1, 2], [2, 3], [3, 0],
+      [4, 5], [5, 6], [6, 7], [7, 4],
+      [0, 4], [1, 5], [2, 6], [3, 7],
+    ];
     const activeIds = new Set<string>();
 
         let bboxes3d: DraftBBox3D[] = [{
+        id: "fake0",
+        entityId: "entity_0_1_1",
+        coordsLance:[345.57745, 655.87494, 1.1944073, 4.795, 2.09, 2.0],
+        rotation:[-0.9658609, -0.25906134, 0.0, 0.25906134, -0.9658609, 0.0, 0.0, 0.0, 1.0],
+        persisted: false,
+      },
+      {
         id: "fake1",
-        entityId: storage.bboxes[0]?.entityId ?? "fakeEntity",
-        coordsLance:[345.848, 655.799, 1.196, 4.795, 2.09, 2.0],
-        rotation:[-0.9660164, -0.25848073, 0.0, 0.25848073, -0.9660164, 0.0, 0.0, 0.0, 1.0],
+        entityId: "entity_0_1_0",
+        coordsLance:[330.789, 641.074, 1.163, 4.512 , 2.06, 1.723],
+        rotation:[-0.75264674, -0.65842456, 0.0, 0.65842456, -0.75264674, 0.0, 0.0, 0.0, 1.0],
         persisted: false,
       },
       {
         id: "fake2",
-        entityId: storage.bboxes[0]?.entityId ?? "fakeEntity",
-        coordsLance:[330.789, 641.074, 1.163, 4.512 , 2.06, 1.723],
-        rotation:[-0.75264674, -0.65842456, 0.0, 0.65842456, -0.75264674, 0.0, 0.0, 0.0, 1.0],
+        entityId: "entity_0_1_2",
+        coordsLance:[340.580, 661.842, 0.530977, 0.555000, 0.467000, 1.22100],
+        rotation:[-0.337369, 0.9413725, 0.0, -0.9413725, -0.337369, 0.0, 0.0, 0.0, 1.0],
+        persisted: false,
+      },
+      {
+        id: "fake3",
+        entityId: "entity_0_1_3",
+        coordsLance:[324.10699, 664.42297, 0.38959724, 0.64399999, 0.85900003, 1.1350000],
+        rotation:[-0.8206054, -0.5714952, 0.0, 0.5714952, -0.8206054, 0.0, 0.0, 0.0, 1.0],
+        persisted: false,
+      },
+      {
+        id: "fake4",
+        entityId: "entity_0_1_4",
+        coordsLance:[345.0189, 628.3326, 1.7187687, 3.885, 1.874, 1.555],
+        rotation:[-0.75949705, -0.6505107, 0.0, 0.6505107, -0.75949705, 0.0, 0.0, 0.0, 1.0],
+        persisted: false,
+      },
+      {
+        id: "fake5",
+        entityId: "entity_0_1_5",
+        coordsLance:[321.0976, 668.0935, 0.87959725, 4.549, 2.111, 2.347],
+        rotation:[ 0.86892146, 0.49494997, 0.0, -0.49494997, 0.86892146, 0.0, 0.0, 0.0, 1.0],
+        persisted: false,
+      },
+      {
+        id: "fake6",
+        entityId: "entity_0_1_6",
+        coordsLance:[300.98273, 691.79956, 1.008, 13.818, 3.132, 3.606],
+        rotation:[-0.6165495, 0.78731614, 0.0, -0.78731614, -0.6165495, 0.0, 0.0, 0.0, 1.0],
+        persisted: false,
+      },
+      {
+        id: "fake7",
+        entityId: "entity_0_1_7",
+        coordsLance:[361.54626, 648.8135, 1.9653935, 8.702, 2.749, 3.078],
+        rotation:[-0.9525713, -0.30431566, 0.0, 0.30431566, -0.9525713, 0.0, 0.0, 0.0, 1.0],
+        persisted: false,
+      },
+      {
+        id: "fake8",
+        entityId: "entity_0_1_8",
+        coordsLance:[348.1467, 646.2081, 1.4477825, 5.567, 2.094, 1.996],
+        rotation:[-0.9411052, -0.33811396, 0.0, 0.33811396, -0.9411052 , 0.0, 0.0, 0.0, 1.0],
+        persisted: false,
+      },
+      {
+        id: "fake9",
+        entityId: "entity_0_1_9",
+        coordsLance:[339.44870, 659.89410, 0.57638437, 0.57599998, 0.55800003, 1.0170000],
+        rotation:[-0.94600934, -0.3241394, 0.0, 0.3241394, -0.94600934, 0.0, 0.0, 0.0, 1.0],
+        persisted: false,
+      },
+       {
+        id: "fake10",
+        entityId: "entity_0_1_10",
+        coordsLance:[349.2406, 634.5696, 1.7272894, 4.204, 2.003, 1.563],
+        rotation:[-0.68454033, 0.728975, 0.0, -0.728975, -0.68454033, 0.0, 0.0, 0.0, 1.0],
         persisted: false,
       },
       ];
 
     for (const bbox of bboxes3d) {
       activeIds.add(bbox.id);
-      let points = pointByBBoxId.get(bbox.id);
+      let lines = linesByBBoxId.get(bbox.id);
       let projectedPoints = projectPoint(bbox);
-      if (!points){
+      if (!lines){
         let normalizedPoints = projectedPoints?.map(point => {
           const dx = point.x /imgOptions.imageWidth;
           const dy = point.y /imgOptions.imageHeight;
-          console.log(imgOptions.imageWidth,imgOptions.imageHeight, point.x, point.y, dx, dy);
           return {x:dx,y:dy};
           });
-        // console.log(!projectedPoints ? "Projection failed" : `${projectedPoints[0].x}, ${projectedPoints[0].y}`);
         const pixels = normalizedPoints?.map(normalizedPointToPixel);
         if (pixels) {
           normalizedPoints?.forEach((point, i) => {
@@ -314,38 +385,34 @@ License: CECILL-C
             }
           });
         }
-        // console.log(!normalizedPoints ? "No projected points" : `${normalizedPoints[0].x}, ${normalizedPoints[0].y}`);
-        points = normalizedPoints?.map(point => {
-          const konvaPoint = makePoint(point.x, point.y);
-          annotationLayer?.add(konvaPoint);
-          console.log(`Added point at ${konvaPoint.x()}, ${konvaPoint.y()}`);
-          return konvaPoint;
-        });
-        // console.log(!points ? "No points" : `${points[0].x()}, ${points[0]?.y()}`);
-        if (!points) continue;
-        pointByBBoxId.set(bbox.id, points);
+        lines = [];
+        for (const [a, b] of edges) {
+          if (normalizedPoints?.[a] || normalizedPoints?.[b]) {
+            const konvaLine = makeLine(normalizedPoints[a], normalizedPoints[b]);
+            lines.push(konvaLine);
+            annotationLayer.add(konvaLine);
+          }
+        }
+        if (!lines) continue;
+        linesByBBoxId.set(bbox.id, lines);
       } else {
         let normalizedPoints = projectedPoints?.map(point => {
           const dx = point.x /imgOptions.imageWidth;
           const dy = point.y /imgOptions.imageHeight;
-          console.log(imgOptions.imageWidth,imgOptions.imageHeight, point.x, point.y, dx, dy);
           return {x:dx,y:dy};
           });
         const pixels = normalizedPoints?.map(normalizedPointToPixel);
         if (pixels) {
-          points?.forEach((point, i) => {
-            const pixel = pixels[i];
-            if (pixel) {
-              point.x(pixel.x);
-              point.y(pixel.y);
-            }
-          });
-        }
-        // points?.forEach(point => {
-        //   point.stroke(bbox.persisted ? "#22d3ee" : "#f59e0b");
-        //   point.dash(bbox.persisted ? [] : [6, 4]);
-        // });
+          for (let i = 0; i<edges.length; i++){
+            const p1 = pixels[edges[i][0]];
+            const p2 = pixels[edges[i][1]];
 
+            if (!p1 || !p2) continue;
+            if (p1.x || p1.y) {
+              lines[i].points([p1.x, p1.y, p2.x, p2.y]);
+            }
+          }
+        }
       }
     }
     syncTransformer();
@@ -364,7 +431,6 @@ License: CECILL-C
         if (!rect) continue;
         annotationLayer.add(rect);
         rectByBBoxId.set(bbox.id, rect);
-        // console.log(rect.x(), rect.y());
       } else {
         const pixel = normalizedRectToPixel(bbox.coordsNorm);
         if (pixel) {
@@ -509,7 +575,7 @@ License: CECILL-C
 
     storage.bboxes = storage.bboxes.filter((b) => b.id !== bbox.id);
     storage.selectedId = null;
-    redrawBoxes();
+    // redrawBoxes();
     redraw3dBoxes();
   }
 
@@ -622,7 +688,7 @@ License: CECILL-C
 
     storage.mode = "select";
     storage.selectedId = localId;
-    redrawBoxes();
+    // redrawBoxes();
     redraw3dBoxes();
   }
 
@@ -714,7 +780,7 @@ License: CECILL-C
         imageLayer.add(konvaImage);
         fitImageToStage();
         imageLoaded = true;
-        redrawBoxes();
+        // redrawBoxes();
         redraw3dBoxes();
       };
       img.onerror = () => {
@@ -773,7 +839,7 @@ License: CECILL-C
   $effect(() => {
     void storage.bboxes.length;
     void storage.selectedId;
-    if (imageLoaded) redrawBoxes();
+    // if (imageLoaded) redrawBoxes();
     if (imageLoaded) redraw3dBoxes();
   });
 
